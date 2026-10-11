@@ -315,18 +315,26 @@ class ExecutorOperation:
                       hcenter=False, vcenter=False, confidence=1.0):
         if name is None:
             name = f"{x} {y} {width} {height}"
-        if self.out_of_ratio():
-            target_ratio = self.executor.device_manager.supported_ratio
-            if isinstance(target_ratio, (list, tuple)):
-                current_ratio = self.width / self.height if self.height else 1.778
-                target_ratio = min(target_ratio, key=lambda r: abs(current_ratio - r))
-            should_width = target_ratio * self.height
-            return self.box_of_screen_scaled(should_width, self.height,
-                                             x_original=x * should_width,
-                                             y_original=self.height * y,
-                                             to_x=to_x * should_width,
-                                             to_y=to_y * self.height, width_original=width * should_width,
-                                             height_original=self.height * height,
+        base_ratio = 16 / 9
+        current_ratio = self.width / self.height if self.height else base_ratio
+        if abs(current_ratio - base_ratio) > 0.02:
+            if current_ratio < base_ratio:
+                ref_w = self.width
+                ref_h = self.width / base_ratio
+            else:
+                ref_h = self.height
+                ref_w = self.height * base_ratio
+            if width == 0:
+                width = to_x - x
+            if height == 0:
+                height = to_y - y
+            return self.box_of_screen_scaled(ref_w, ref_h,
+                                             x_original=x * ref_w,
+                                             y_original=y * ref_h,
+                                             to_x=to_x * ref_w,
+                                             to_y=to_y * ref_h,
+                                             width_original=width * ref_w,
+                                             height_original=height * ref_h,
                                              name=name, hcenter=hcenter, vcenter=vcenter, confidence=confidence)
         else:
             return relative_box(self.executor.method.width, self.executor.method.height, x, y,
@@ -378,27 +386,42 @@ class ExecutorOperation:
     def width_of_screen(self, percent):
         return int(percent * self.executor.method.width)
 
+    def get_relative_cords(self, x, y, hcenter=False, vcenter=False):
+        """
+        Convert relative coordinates (0-1, normalized to 16:9 canvas) to screen coordinates,
+        adapting via anchor scaling when the screen aspect ratio differs from 16:9 (e.g. 16:10 or 21:9).
+        """
+        base_ratio = 16 / 9
+        current_ratio = self.width / self.height if self.height else base_ratio
+        if abs(current_ratio - base_ratio) > 0.02:
+            if current_ratio < base_ratio:
+                # Narrower/taller than 16:9 (e.g. 16:10, 4:3)
+                ref_w = self.width
+                ref_h = self.width / base_ratio
+            else:
+                # Wider than 16:9 (e.g. 21:9, 32:9)
+                ref_h = self.height
+                ref_w = self.height * base_ratio
+            adj_x, adj_y, _, _, _ = adjust_coordinates(x * ref_w, y * ref_h, 0, 0,
+                                                       self.screen_width, self.screen_height, ref_w,
+                                                       ref_h, hcenter=hcenter, vcenter=vcenter)
+            return int(adj_x), int(adj_y)
+        else:
+            return int(self.width * x), int(self.height * y)
+
     def click_relative(self, x, y, move_back=False, hcenter=False, vcenter=False, move=True, after_sleep=0, name=None,
                        interval=-1,
                        down_time=0.02,
                        key="left"):
-        if self.out_of_ratio():
-            target_ratio = self.executor.device_manager.supported_ratio
-            if isinstance(target_ratio, (list, tuple)):
-                current_ratio = self.width / self.height if self.height else 1.778
-                target_ratio = min(target_ratio, key=lambda r: abs(current_ratio - r))
-            should_width = target_ratio * self.height
-            x, y, w, h, scale = adjust_coordinates(x * should_width, y * self.height, 0, 0,
-                                                   self.screen_width, self.screen_height, should_width,
-                                                   self.height, hcenter=hcenter, vcenter=vcenter)
-        else:
-            x, y = int(self.width * x), int(self.height * y)
+        x, y = self.get_relative_cords(x, y, hcenter=hcenter, vcenter=vcenter)
         self.click(x, y, move_back, name=name, move=move, down_time=down_time, after_sleep=after_sleep,
                    interval=interval, key=key)
 
     def middle_click_relative(self, x, y, move_back=False, down_time=0.01):
-        self.middle_click(int(self.width * x), int(self.height * y), move_back,
-                          name=f'relative({x:.2f}, {y:.2f})', down_time=down_time)
+        rel_x, rel_y = x, y
+        x, y = self.get_relative_cords(x, y)
+        self.middle_click(x, y, move_back,
+                          name=f'relative({rel_x:.2f}, {rel_y:.2f})', down_time=down_time)
 
     @property
     def height(self):
@@ -409,7 +432,8 @@ class ExecutorOperation:
         return self.executor.method.width
 
     def move_relative(self, x, y):
-        self.move(int(self.width * x), int(self.height * y))
+        x, y = self.get_relative_cords(x, y)
+        self.move(x, y)
 
     def move(self, x, y):
         self.executor.interaction.move(x, y)
@@ -798,7 +822,10 @@ class OCR(FindFeature):
         match = self.fix_match_regex(match)
         frame_height, frame_width = image.shape[0], image.shape[1]
         if box is None:
-            box = relative_box(frame_width, frame_height, x, y, to_x, to_y, width, height, name)
+            if x == 0 and y == 0 and to_x == 1 and to_y == 1 and width == 0 and height == 0:
+                box = Box(0, 0, frame_width, frame_height, name=name)
+            else:
+                box = self.box_of_screen(x, y, to_x, to_y, width, height, name)
         if box is not None:
             image = image[box.y:box.y + box.height, box.x:box.x + box.width]
             if not box.name and match:

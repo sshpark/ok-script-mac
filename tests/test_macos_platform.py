@@ -86,6 +86,7 @@ class TestMacWindow(unittest.TestCase):
         window.y = 200
         window.width = 1920
         window.height = 1080
+        window.title_bar_height = 0
 
         screen_x, screen_y = window.get_abs_cords(500, 300)
         self.assertEqual(screen_x, 600)
@@ -601,4 +602,53 @@ class TestMacTitleBar(unittest.TestCase):
         support, res_str = executor.check_frame_and_resolution(['16:9', '16:10'], min_size=(1280, 720))
         self.assertTrue(support)
         self.assertEqual(res_str, '1280x800')
+
+    def test_16_10_relative_coordinate_anchor_scaling(self):
+        from ok.task.task import BaseTask
+        task = object.__new__(BaseTask)
+        mock_executor = Mock()
+        mock_method = Mock()
+        mock_method.width = 1280
+        mock_method.height = 800
+        mock_executor.method = mock_method
+        task._executor = mock_executor
+
+        # 16:9 base canvas on 1280x800 is 1280x720 (+80 extra vertical pixels)
+        # Top-anchored button (y = 0.12):
+        # 16:9 pos was 720 * 0.12 = 86.4 -> round = 86
+        # Without anchor scaling, it would be 800 * 0.12 = 96 (10px error)
+        top_x, top_y = task.get_relative_cords(0.17, 0.12)
+        self.assertEqual(top_x, 218)
+        self.assertEqual(top_y, 86)
+
+        # Bottom-anchored button (y = 0.882):
+        # 16:9 distance from bottom is (1 - 0.882) * 720 = 84.96
+        # On 1280x800, anchored pos is 800 - 85 = 715
+        # Without anchor scaling, it would be 800 * 0.882 = 705 (10px error)
+        bot_x, bot_y = task.get_relative_cords(0.930, 0.882)
+        self.assertEqual(bot_x, 1190)
+        self.assertEqual(bot_y, 715)
+
+        # Center-anchored button (vcenter=True, y = 0.5)
+        mid_x, mid_y = task.get_relative_cords(0.5, 0.5, vcenter=True)
+        self.assertEqual(mid_x, 640)
+        self.assertEqual(mid_y, 400)
+
+    def test_16_10_box_of_screen_anchor_scaling(self):
+        from ok.task.task import BaseTask
+        task = object.__new__(BaseTask)
+        mock_executor = Mock()
+        mock_method = Mock()
+        mock_method.width = 1280
+        mock_method.height = 800
+        mock_executor.method = mock_method
+        task._executor = mock_executor
+
+        # Box near bottom: y=0.8, to_y=0.93
+        box = task.box_of_screen(0.19, 0.8, 0.30, 0.93)
+        self.assertIsNotNone(box)
+        # Since y=0.8 > 0.5, y anchors to bottom
+        # y should be around 800 - (1 - 0.8) * 720 = 800 - 144 = 656
+        self.assertAlmostEqual(box.y, 656, delta=2)
+
 

@@ -306,10 +306,63 @@ class MacWindow:
         self.game_pid = int(best.get('kCGWindowOwnerPID', 0))
         return best['kCGWindowNumber'], bounds, owner
 
+    def _get_title_bar_height_from_ax(self, w=0, h=0):
+        """Query macOS Accessibility API for exact title bar height of the game window."""
+        if not self.game_pid or self.game_pid <= 0:
+            return None
+        try:
+            import ApplicationServices
+            ax_app = ApplicationServices.AXUIElementCreateApplication(self.game_pid)
+            err, windows = ApplicationServices.AXUIElementCopyAttributeValue(ax_app, 'AXWindows', None)
+            if err != 0 or not windows:
+                return None
+            for win in windows:
+                err, win_size_ref = ApplicationServices.AXUIElementCopyAttributeValue(win, 'AXSize', None)
+                if err != 0 or not win_size_ref:
+                    continue
+                success, win_size = ApplicationServices.AXValueGetValue(win_size_ref, ApplicationServices.kAXValueCGSizeType, None)
+                if not success:
+                    continue
+                if w > 0 and h > 0:
+                    if abs(win_size.width - w) > 4 or abs(win_size.height - h) > 4:
+                        continue
+
+                err, win_pos_ref = ApplicationServices.AXUIElementCopyAttributeValue(win, 'AXPosition', None)
+                if err != 0 or not win_pos_ref:
+                    continue
+                success, win_pos = ApplicationServices.AXValueGetValue(win_pos_ref, ApplicationServices.kAXValueCGPointType, None)
+                if not success:
+                    continue
+
+                err, children = ApplicationServices.AXUIElementCopyAttributeValue(win, 'AXChildren', None)
+                if err != 0 or not children:
+                    continue
+
+                has_window_buttons = False
+                for c in children:
+                    err, subrole = ApplicationServices.AXUIElementCopyAttributeValue(c, 'AXSubrole', None)
+                    if subrole in ('AXCloseButton', 'AXMinimizeButton', 'AXZoomButton', 'AXFullScreenButton'):
+                        has_window_buttons = True
+                    err, role = ApplicationServices.AXUIElementCopyAttributeValue(c, 'AXRole', None)
+                    if role in ('AXSplitGroup', 'AXGroup', 'AXScrollArea', 'AXUnknown'):
+                        err, c_pos_ref = ApplicationServices.AXUIElementCopyAttributeValue(c, 'AXPosition', None)
+                        if err == 0 and c_pos_ref:
+                            ok, c_pos = ApplicationServices.AXValueGetValue(c_pos_ref, ApplicationServices.kAXValueCGPointType, None)
+                            if ok and c_pos.y >= win_pos.y:
+                                delta = int(round(c_pos.y - win_pos.y))
+                                if 20 <= delta <= 60:
+                                    return delta
+                if has_window_buttons:
+                    return 32
+            return None
+        except Exception:
+            return None
+
     def _calculate_title_bar_height(self, w, h):
         """Deduce macOS title bar height so the content area matches supported aspect ratios."""
         if w <= 0 or h <= 0:
             return 0
+
         candidate_ratios = [16 / 9, 16 / 10]
         if self.device_manager and getattr(self.device_manager, 'supported_ratio', None):
             sr = self.device_manager.supported_ratio
@@ -322,7 +375,12 @@ class MacWindow:
         if any(abs(w / h - r) < 0.02 for r in candidate_ratios):
             return 0
 
-        # Try standard macOS title bar heights (32pt for modern macOS, 28pt for legacy)
+        # 1. Try macOS Accessibility API for ground truth if window size matches
+        ax_tb = self._get_title_bar_height_from_ax(w, h)
+        if ax_tb is not None:
+            return ax_tb
+
+        # 2. Try standard macOS title bar heights (32pt for modern macOS, 28pt for legacy)
         for tb in (32, 28, 30, 24):
             if h > tb:
                 content_h = h - tb
