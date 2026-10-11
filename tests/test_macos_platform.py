@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
-import pytest
 
 from ok.device.capture_methods.mac_capture import MacCaptureMethod, MacCaptureMethodFallback, _cgimage_to_bgr
 from ok.device.capture_methods.mac_window import MacWindow
